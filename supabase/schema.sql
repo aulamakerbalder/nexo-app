@@ -1,0 +1,24 @@
+-- Ejecuta este archivo completo en Supabase > SQL Editor.
+create extension if not exists pgcrypto;
+create table public.profiles (id uuid primary key references auth.users(id) on delete cascade,username text unique not null check (username ~ '^[a-z0-9_]{3,25}$'),display_name text,created_at timestamptz not null default now());
+create table public.posts (id uuid primary key default gen_random_uuid(),user_id uuid not null references public.profiles(id) on delete cascade,caption text not null default '' check (length(caption)<=2000),image_path text not null,created_at timestamptz not null default now());
+create table public.likes (post_id uuid not null references public.posts(id) on delete cascade,user_id uuid not null references public.profiles(id) on delete cascade,primary key(post_id,user_id));
+create table public.comments (id uuid primary key default gen_random_uuid(),post_id uuid not null references public.posts(id) on delete cascade,user_id uuid not null references public.profiles(id) on delete cascade,body text not null check(length(trim(body)) between 1 and 500),created_at timestamptz not null default now());
+create or replace function public.new_profile() returns trigger language plpgsql security definer set search_path='' as $$ begin insert into public.profiles(id,username,display_name) values(new.id,lower(new.raw_user_meta_data->>'username'),lower(new.raw_user_meta_data->>'username'));return new;end;$$;
+create trigger on_auth_user_created after insert on auth.users for each row execute function public.new_profile();
+alter table public.profiles enable row level security;alter table public.posts enable row level security;alter table public.likes enable row level security;alter table public.comments enable row level security;
+create policy "profiles read" on public.profiles for select to anon,authenticated using(true);
+create policy "profiles update own" on public.profiles for update to authenticated using(id=(select auth.uid())) with check(id=(select auth.uid()));
+create policy "posts read" on public.posts for select to anon,authenticated using(true);
+create policy "posts create own" on public.posts for insert to authenticated with check(user_id=(select auth.uid()) and image_path like (auth.uid()::text || '/%'));
+create policy "posts delete own" on public.posts for delete to authenticated using(user_id=(select auth.uid()));
+create policy "likes read" on public.likes for select to anon,authenticated using(true);
+create policy "likes create own" on public.likes for insert to authenticated with check(user_id=(select auth.uid()));
+create policy "likes delete own" on public.likes for delete to authenticated using(user_id=(select auth.uid()));
+create policy "comments read" on public.comments for select to anon,authenticated using(true);
+create policy "comments create own" on public.comments for insert to authenticated with check(user_id=(select auth.uid()));
+create policy "comments delete own" on public.comments for delete to authenticated using(user_id=(select auth.uid()));
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types) values('posts','posts',true,5242880,array['image/jpeg','image/png','image/webp','image/gif']) on conflict(id) do nothing;
+create policy "public photos" on storage.objects for select to anon,authenticated using(bucket_id='posts');
+create policy "upload own photos" on storage.objects for insert to authenticated with check(bucket_id='posts' and (storage.foldername(name))[1]=(select auth.uid())::text);
+create policy "delete own photos" on storage.objects for delete to authenticated using(bucket_id='posts' and (storage.foldername(name))[1]=(select auth.uid())::text);
